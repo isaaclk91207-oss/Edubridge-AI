@@ -8,128 +8,107 @@ from backend.app.database.storage import gemini_client, sf_client, groq_client, 
 
 router = APIRouter(prefix="/chat", tags=["AI Agents"])
 
-
+# replace all codes of Cofounder and updated!
 @router.post("/cofounder")
 async def cofounder_chat(request: ChatRequest):
-    """AI Co-founder agent for startup/roadmap help"""
-    
+    """AI Co-founder agent for startup/roadmap help (Gemini only)"""
+
     async def generate():
         full_response = ""
-        winner_model = "Unknown"
-        
-        # Save user message to DB
+
+        # Save user message (non-blocking)
         asyncio.create_task(
-            asyncio.to_thread(save_chat_to_db, request.user_id, "user", request.message, "cofounder")
+            asyncio.to_thread(
+                save_chat_to_db,
+                request.user_id,
+                "user",
+                request.message,
+                "cofounder"
+            )
         )
-        
+
         CoFounder_system_prompt = (
             "You are an expert strategic co-founder. "
-            "If the user says 'hi', 'hello', or greets you without a specific idea, "
-            "respond warmly and ask them what startup or project they are thinking about. "
-            "If the user provides a specific idea or goal, provide a professional, "
-            "step-by-step roadmap to help them launch it."
+            "If the user greets without a specific idea, respond warmly and ask what startup "
+            "or project they are thinking about. "
+            "If they provide a goal, give a clear step-by-step roadmap to launch it."
         )
-        
-        # Check if greeting
-        is_greeting = any(word in request.message.lower() for word in ["hi", "hello", "hey"])
-        words_count = len(request.message.split())
-        
+
+        msg = request.message.lower().strip()
+        is_greeting = msg in ["hi", "hello", "hey"]
+        words_count = len(msg.split())
+
+        # Start YouTube fetch in parallel (only if meaningful request)
         video_task = None
         if not is_greeting and words_count > 2:
             video_task = asyncio.create_task(
-                asyncio.to_thread(get_youtube_videos, f"{request.message} business roadmap 2025")
+                asyncio.to_thread(
+                    get_youtube_videos,
+                    f"{request.message} business roadmap 2025"
+                )
             )
-        
-        # Race Logic: Call Gemini and Groq in parallel
-        async def call_gemini():
-            try:
-                if gemini_client is None:
-                    return (None, "Gemini")
-                response = await gemini_client.models.generate_content(
-                    model='gemini-2.0-flash',
-                    contents=[
-                        {"role": "user", "parts": [{"text": CoFounder_system_prompt}]},
-                        {"role": "user", "parts": [{"text": request.message}]}
-                    ]
-                )
-                return (response.text, "Gemini")
-            except Exception as e:
-                print(f"Gemini Error: {e}")
-                return (None, "Gemini")
 
-        async def call_groq():
-            try:
-                if groq_client is None:
-                    return (None, "Groq")
-                response = await groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[
-                        {"role": "system", "content": CoFounder_system_prompt},
-                        {"role": "user", "content": request.message}
-                    ]
-                )
-                return (response.choices[0].message.content, "Groq")
-            except Exception as e:
-                print(f"Groq Error: {e}")
-                return (None, "Groq")
-
-        # Run both calls in parallel with 10-second timeout
-        t1 = asyncio.create_task(call_gemini())
-        t2 = asyncio.create_task(call_groq())
-        
         try:
-            # Wait for first result with 10-second timeout
-            done, pending = await asyncio.wait(
-                {t1, t2}, 
-                return_when=asyncio.FIRST_COMPLETED,
-                timeout=10.0  # 10 seconds timeout
-            )
-            
-            winner_result = None
-            
-            for task in done:
-                result, model_name = task.result()
-                if result:
-                    winner_result = result
-                    winner_model = model_name
-                    break
-            
-            # Cancel any remaining tasks
-            for p in pending:
-                p.cancel()
-                
-        except asyncio.TimeoutError:
-            # Timeout - return fallback immediately
-            winner_result = None
+            if gemini_client is None:
+                yield "Gemini service not configured."
+                return
 
-        print(f"Race Winner: {winner_model}")
-            
-        if winner_result:
-            full_response = winner_result
-            yield winner_result
-        else:
-            fallback_msg = "Both AI services are currently busy. Please try again."
-            full_response = fallback_msg
-            yield fallback_msg
-        
-        # Handle YouTube video task
+            # 🚀 IMPORTANT: run in thread to prevent event loop blocking
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model="gemini-2.0-flash",
+                contents=[
+                    {
+                        "role": "user",
+                        "parts": [{"text": CoFounder_system_prompt}]
+                    },
+                    {
+                        "role": "user",
+                        "parts": [{"text": request.message}]
+                    }
+                ]
+            )
+
+            full_response = response.text
+            yield full_response
+
+        except Exception as e:
+            print(f"Gemini Error: {e}")
+            error_msg = "AI service is temporarily unavailable. Please try again."
+            full_response = error_msg
+            yield error_msg
+            return
+
+        # Handle YouTube result after AI response
         if video_task:
             try:
-                videos = await video_task 
-                has_roadmap = any(x in full_response.lower() for x in ["roadmap", "step 1", "strategy", "launch"])
-                
+                videos = await video_task
+
+                has_roadmap = any(
+                    x in full_response.lower()
+                    for x in ["roadmap", "step 1", "strategy", "launch"]
+                )
+
                 if videos and has_roadmap:
                     video_text = "\n\n### Recommended Tutorials:\n"
-                    for v in videos:
+                    for v in videos[:3]:
                         video_text += f"- [{v['title']}]({v['link']})\n"
-                    
+
                     full_response += video_text
                     yield video_text
-            except Exception as e:
-                print(f"Video Error: {e}")
 
+            except Exception as e:
+                print(f"YouTube Error: {e}")
+
+        # Save assistant reply
         asyncio.create_task(
-            asyncio.to_thread(save_chat_to_db, request.user_id, "assistant", full_response, f"Co-founder({winner_model})")
+            asyncio.to_thread(
+                save_chat_to_db,
+                request.user_id,
+                "assistant",
+                full_response,
+                "Co-founder (Gemini Flash)"
+            )
         )
 
     return StreamingResponse(generate(), media_type="text/plain")
