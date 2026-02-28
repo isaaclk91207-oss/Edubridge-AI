@@ -8,7 +8,7 @@ from backend.app.database.storage import gemini_client, sf_client, groq_client, 
 
 router = APIRouter(prefix="/chat", tags=["AI Agents"])
 
-# replace all codes of Cofounder and updated!
+# replaced all codes of Cofounder and updated!
 @router.post("/cofounder")
 async def cofounder_chat(request: ChatRequest):
     """AI Co-founder agent for startup/roadmap help (Gemini only)"""
