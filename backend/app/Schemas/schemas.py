@@ -34,3 +34,10 @@ class UserLogin(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     email: str
     new_password: str
+
+#new added for portfolio
+class PortfolioRequest(BaseModel):
+    user_id: str
+    career_role: str
+    skills: str
+    summary: str
