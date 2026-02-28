@@ -53,7 +53,7 @@ async def cofounder_chat(request: ChatRequest):
                 yield "Gemini service not configured."
                 return
 
-            # 🚀 IMPORTANT: run in thread to prevent event loop blocking
+            # IMPORTANT: run in thread to prevent event loop blocking
             response = await asyncio.to_thread(
                 gemini_client.models.generate_content,
                 model="gemini-2.0-flash",
@@ -113,105 +113,71 @@ async def cofounder_chat(request: ChatRequest):
 
     return StreamingResponse(generate(), media_type="text/plain")
 
-
 @router.post("/mentor")
 async def mentor_chat(request: ChatRequest):
-    """AI Mentor agent for interview practice - with 429 fallback to Groq"""
-    
+    """Ultra-fast AI Mentor using Groq"""
+
     async def generate():
         full_response = ""
-        
+
         mentor_system_prompt = (
             "You are a wise and supportive Interview Mentor. "
             "Help the user practice for job interviews. "
             "Ask about their background, skills, and target job. "
-            "Provide constructive feedback and tips. "
-            "Keep your tone encouraging and professional."
+            "Give structured feedback. "
+            "Keep responses clear, practical, and concise."
         )
-        
+
+        # Save user message (non-blocking)
         asyncio.create_task(
-            asyncio.to_thread(save_chat_to_db, request.user_id, "user", request.message, "mentor")
+            asyncio.to_thread(
+                save_chat_to_db,
+                request.user_id,
+                "user",
+                request.message,
+                "mentor"
+            )
         )
 
-        # Try SiliconFlow (DeepSeek) first
-        client_used = None
-        response = None
-        
-        try:
-            if sf_client is not None:
-                client_used = "SiliconFlow"
-                response = await sf_client.chat.completions.create(
-                    model="deepseek-ai/DeepSeek-V3",
-                    messages=[
-                        {"role": "system", "content": mentor_system_prompt},
-                        {"role": "user", "content": request.message}
-                    ],
-                    stream=True
-                )
-        except Exception as e:
-            error_msg = str(e)
-            print(f"SiliconFlow Mentor Error: {e}")
-            
-            # Check for 429 error - fallback to Groq
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
-                print("SiliconFlow quota exceeded, falling back to Groq...")
-                try:
-                    if groq_client is not None:
-                        client_used = "Groq"
-                        response = await groq_client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
-                            messages=[
-                                {"role": "system", "content": mentor_system_prompt},
-                                {"role": "user", "content": request.message}
-                            ],
-                            stream=True
-                        )
-                except Exception as groq_error:
-                    print(f"Groq fallback also failed: {groq_error}")
-                    yield "Sorry, all AI services are currently unavailable. Please try again later."
-                    return
-            else:
-                # Try Groq for other errors too
-                try:
-                    if groq_client is not None:
-                        client_used = "Groq"
-                        response = await groq_client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
-                            messages=[
-                                {"role": "system", "content": mentor_system_prompt},
-                                {"role": "user", "content": request.message}
-                            ],
-                            stream=True
-                        )
-                except Exception as groq_error:
-                    print(f"Groq fallback also failed: {groq_error}")
-                    yield "Sorry, all AI services are currently unavailable. Please try again later."
-                    return
-        else:
-            if response is None:
-                yield "Mentor service is not available. Please check API configuration."
-                return
+        if groq_client is None:
+            yield "Mentor service is not configured."
+            return
 
-        # Stream the response word-by-word
         try:
-            async for chunk in response:
+            # FASTEST model on Groq
+            stream = await groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {"role": "system", "content": mentor_system_prompt},
+                    {"role": "user", "content": request.message}
+                ],
+                temperature=0.7,
+                stream=True
+            )
+
+            async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     full_response += content
                     yield content
-            
-            # Save to DB
-            model_name = "mentor (DeepSeek-V3)" if client_used == "SiliconFlow" else "mentor (Llama-3.3-70B)"
-            asyncio.create_task(
-                asyncio.to_thread(save_chat_to_db, request.user_id, "assistant", full_response, model_name)
-            )
-            
+
         except Exception as e:
-            print(f"Mentor Streaming Error: {e}")
-            yield f"Mentor Error: {str(e)}"
+            print(f"Groq Mentor Error: {e}")
+            yield "Mentor AI is temporarily unavailable. Please try again."
+            return
+
+        # Save assistant response
+        asyncio.create_task(
+            asyncio.to_thread(
+                save_chat_to_db,
+                request.user_id,
+                "assistant",
+                full_response,
+                "mentor (Groq 8B Instant)"
+            )
+        )
 
     return StreamingResponse(generate(), media_type="text/plain")
-
 
 @router.post("/support")
 async def support_chat(request: ChatRequest):
